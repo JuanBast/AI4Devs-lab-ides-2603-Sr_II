@@ -6,6 +6,15 @@ info:
     
     This API follows Domain-Driven Design principles and implements a layered architecture for scalable recruitment management.
     
+    ## JSON response envelope (backend standards)
+    Successful JSON responses use `success: true` and place the payload in `data`. An optional top-level `message` may be included.
+    Error responses use `success: false` and an `error` object with `message`, `code`, and optionally `details` (array of strings, e.g. validation).
+    HTTP status codes remain the primary indicator; the envelope must match `ai-specs/specs/backend-standards.mdc` (Request/Response Patterns).
+    
+    ## Security notes
+    - Candidate creation may be rate-limited (HTTP 429, `code: RATE_LIMIT_EXCEEDED`).
+    - Resume storage paths are never returned in JSON; only opaque metadata (e.g. resume id, MIME type, upload date) appears in API shapes.
+    
     ## Features
     - Candidate management with education and work experience tracking
     - Position management with company and interview flow integration
@@ -80,6 +89,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests (`code` RATE_LIMIT_EXCEEDED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -89,12 +104,44 @@ paths:
     
     post:
       summary: Create a new candidate
-      description: Add a new candidate to the system with their personal information, education, and work experience
+      description: |
+        Add a new candidate with personal data, education, and work experience. The live backend accepts **multipart/form-data** (fields plus optional `resume` file).
+        For OpenAPI tooling, a JSON body schema is also documented; clients should follow the multipart contract in production.
       tags:
         - Candidates
       requestBody:
         required: true
         content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - firstName
+                - lastName
+                - email
+                - educations
+              properties:
+                firstName:
+                  type: string
+                lastName:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+                address:
+                  type: string
+                educations:
+                  type: string
+                  description: JSON array of education objects (same shape as CreateEducationRequest)
+                workExperiences:
+                  type: string
+                  description: JSON array of work experience objects (optional)
+                resume:
+                  type: string
+                  format: binary
+                  description: PDF or DOCX resume (max 10MB)
           application/json:
             schema:
               $ref: '#/components/schemas/CreateCandidateRequest'
@@ -106,7 +153,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreateCandidateResponse'
         '400':
-          description: Validation error or email already exists
+          description: Validation error or invalid resume
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Duplicate email (`code` DUPLICATE_EMAIL)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests (`code` RATE_LIMIT_EXCEEDED)
           content:
             application/json:
               schema:
@@ -137,7 +196,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CandidateDetails'
+                $ref: '#/components/schemas/CandidateDetailsSuccessResponse'
         '400':
           description: Invalid ID format
           content:
@@ -213,9 +272,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Position'
+                $ref: '#/components/schemas/PositionListSuccessResponse'
         '500':
           description: Internal server error
           content:
@@ -242,7 +299,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Position'
+                $ref: '#/components/schemas/PositionDetailSuccessResponse'
         '400':
           description: Invalid position ID format
           content:
@@ -327,9 +384,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/PositionCandidate'
+                $ref: '#/components/schemas/PositionCandidateListSuccessResponse'
         '500':
           description: Internal server error
           content:
@@ -356,9 +411,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/CandidateName'
+                $ref: '#/components/schemas/CandidateNameListSuccessResponse'
         '500':
           description: Internal server error
           content:
@@ -385,7 +438,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/InterviewFlowResponse'
+                $ref: '#/components/schemas/InterviewFlowSuccessResponse'
         '404':
           description: Position not found
           content:
@@ -424,7 +477,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FileUploadResponse'
+                $ref: '#/components/schemas/FileUploadSuccessResponse'
         '400':
           description: Invalid file type or file too large
           content:
@@ -440,18 +493,72 @@ paths:
 
 components:
   schemas:
-    CandidateListResponse:
+    ApiErrorBody:
+      type: object
+      required:
+        - message
+        - code
+      properties:
+        message:
+          type: string
+          description: Human-readable error description
+        code:
+          type: string
+          description: >
+            Stable machine-readable code (e.g. VALIDATION_ERROR, DUPLICATE_EMAIL,
+            NOT_FOUND, RATE_LIMIT_EXCEEDED, CORS_FORBIDDEN, INTERNAL_ERROR).
+        details:
+          type: array
+          items:
+            type: string
+          description: Optional detail lines (e.g. validation messages)
+
+    CandidateSummary:
+      type: object
+      description: Minimal candidate fields for paginated lists (data minimization).
+      properties:
+        id:
+          type: integer
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+          format: email
+      required:
+        - id
+        - firstName
+        - lastName
+        - email
+
+    CandidateListPayload:
       type: object
       properties:
         data:
           type: array
           items:
-            $ref: '#/components/schemas/Candidate'
+            $ref: '#/components/schemas/CandidateSummary'
         metadata:
           $ref: '#/components/schemas/PaginationMetadata'
       required:
         - data
         - metadata
+
+    CandidateListResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          $ref: '#/components/schemas/CandidateListPayload'
+        message:
+          type: string
+          description: Optional success message
 
     Candidate:
       type: object
@@ -522,6 +629,21 @@ components:
                         items:
                           $ref: '#/components/schemas/Interview'
 
+    CandidateDetailsSuccessResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          $ref: '#/components/schemas/CandidateDetails'
+        message:
+          type: string
+          description: Optional success message
+
     CreateCandidateRequest:
       type: object
       properties:
@@ -558,7 +680,7 @@ components:
         - lastName
         - email
 
-    CreateCandidateResponse:
+    CreatedCandidateResource:
       type: object
       properties:
         id:
@@ -582,6 +704,22 @@ components:
         - lastName
         - email
 
+    CreateCandidateResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          $ref: '#/components/schemas/CreatedCandidateResource'
+        message:
+          type: string
+          nullable: true
+          description: Optional success message per backend standards
+
     UpdateCandidateStageRequest:
       type: object
       properties:
@@ -597,12 +735,18 @@ components:
 
     UpdateCandidateStageResponse:
       type: object
+      required:
+        - success
+        - data
       properties:
-        message:
-          type: string
-          example: "Candidate stage updated successfully"
+        success:
+          type: boolean
+          enum: [true]
         data:
           $ref: '#/components/schemas/Application'
+        message:
+          type: string
+          example: Candidate stage updated successfully
 
     Position:
       type: object
@@ -758,12 +902,18 @@ components:
 
     UpdatePositionResponse:
       type: object
+      required:
+        - success
+        - data
       properties:
-        message:
-          type: string
-          example: "Position updated successfully"
+        success:
+          type: boolean
+          enum: [true]
         data:
           $ref: '#/components/schemas/Position'
+        message:
+          type: string
+          example: Position updated successfully
 
     PositionCandidate:
       type: object
@@ -803,7 +953,65 @@ components:
         - candidateId
         - fullName
 
-    InterviewFlowResponse:
+    PositionListSuccessResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Position'
+        message:
+          type: string
+
+    PositionDetailSuccessResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          $ref: '#/components/schemas/Position'
+        message:
+          type: string
+
+    PositionCandidateListSuccessResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PositionCandidate'
+
+    CandidateNameListSuccessResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CandidateName'
+
+    InterviewFlowPayload:
       type: object
       properties:
         interviewFlow:
@@ -814,6 +1022,20 @@ components:
               description: Position title
             interviewFlow:
               $ref: '#/components/schemas/InterviewFlow'
+
+    InterviewFlowSuccessResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          $ref: '#/components/schemas/InterviewFlowPayload'
+        message:
+          type: string
 
     InterviewFlow:
       type: object
@@ -961,36 +1183,36 @@ components:
         - startDate
 
     Resume:
+      description: >
+        Resume metadata exposed to API clients. The `filePath` column exists in persistence only;
+        it is never returned in JSON responses (see backend security standards).
       type: object
       properties:
         id:
           type: integer
-          description: Resume record ID
+          description: Resume record ID (opaque handle for clients)
         candidateId:
           type: integer
           description: Associated candidate ID
-        filePath:
-          type: string
-          description: Resume file path
         fileType:
           type: string
-          description: Resume file MIME type
+          description: MIME type (e.g. application/pdf, DOCX)
+        uploadDate:
+          type: string
+          format: date-time
+          description: When the file was stored
       required:
-        - filePath
+        - id
         - fileType
 
     CreateResumeRequest:
+      description: >
+        Prefer multipart upload with binary field `resume`. Clients must not submit server-side storage paths.
       type: object
       properties:
-        filePath:
-          type: string
-          description: Resume file path
         fileType:
           type: string
-          description: Resume file MIME type
-      required:
-        - filePath
-        - fileType
+          description: Declared MIME type; must match file magic bytes on the server
 
     Application:
       type: object
@@ -1038,18 +1260,32 @@ components:
           nullable: true
           description: Interview score
 
-    FileUploadResponse:
+    FileUploadResource:
       type: object
+      description: Upload result without any filesystem path (paths are never exposed in JSON).
       properties:
-        filePath:
-          type: string
-          description: Uploaded file path
+        id:
+          type: integer
+          description: Optional opaque identifier for the uploaded asset
         fileType:
           type: string
-          description: Uploaded file MIME type
+          description: Stored MIME type
       required:
-        - filePath
         - fileType
+
+    FileUploadSuccessResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          $ref: '#/components/schemas/FileUploadResource'
+        message:
+          type: string
 
     PaginationMetadata:
       type: object
@@ -1074,15 +1310,15 @@ components:
 
     ErrorResponse:
       type: object
-      properties:
-        message:
-          type: string
-          description: Error message
-        error:
-          type: string
-          description: Detailed error information
       required:
-        - message
+        - success
+        - error
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          $ref: '#/components/schemas/ApiErrorBody'
 
 tags:
   - name: Candidates

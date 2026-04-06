@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { CandidateService, CreateCandidateMultipartPayload } from '../application/services/CandidateService';
 import type { ICandidateRepository } from '../domain/repositories/ICandidateRepository';
 import { Candidate } from '../domain/models/Candidate';
@@ -67,35 +70,85 @@ describe('CandidateService.createCandidate', () => {
     });
 
     it('passes resume file metadata to the repository when a file is provided', async () => {
-      // Arrange
-      const savedWithResume = new Candidate(
-        'Jane',
-        'Doe',
-        'jane.doe@example.com',
-        [new Education('MIT', 'BSc', new Date('2015-09-01'), undefined, 11)],
-        [],
-        undefined,
-        undefined,
-        { path: 'uploads/resume-123.pdf', mimeType: 'application/pdf' },
-        43,
+      const dir = fs.mkdtempSync(join(tmpdir(), 'resume-meta-'));
+      const pdfPath = join(dir, 'resume-123.pdf');
+      fs.writeFileSync(
+        pdfPath,
+        Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]),
       );
-      mockRepository.save.mockResolvedValue(savedWithResume);
+
+      mockRepository.save.mockImplementation(async (c: Candidate) => {
+        return new Candidate(
+          c.firstName,
+          c.lastName,
+          c.email,
+          c.educations,
+          c.workExperiences,
+          c.phone,
+          c.address,
+          c.resumeFile,
+          43,
+        );
+      });
 
       const payload: CreateCandidateMultipartPayload = {
         ...makeValidPayload(),
-        resumeFile: { path: 'uploads/resume-123.pdf', mimeType: 'application/pdf' },
+        resumeFile: { path: pdfPath, mimeType: 'application/pdf' },
       };
 
-      // Act
       const result = await service.createCandidate(payload);
 
-      // Assert
       expect(result.id).toBe(43);
       const savedArg = mockRepository.save.mock.calls[0][0];
-      expect(savedArg.resumeFile).toEqual({
-        path: 'uploads/resume-123.pdf',
-        mimeType: 'application/pdf',
+      expect(savedArg.resumeFile?.mimeType).toBe('application/pdf');
+      expect(savedArg.resumeFile?.path).toMatch(
+        /^.*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$/i,
+      );
+
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('maps education without endDate and work experience with optional fields', async () => {
+      mockRepository.save.mockImplementation(async (c: Candidate) => {
+        return new Candidate(
+          c.firstName,
+          c.lastName,
+          c.email,
+          c.educations,
+          c.workExperiences,
+          c.phone,
+          c.address,
+          c.resumeFile,
+          88,
+        );
       });
+
+      const payload: CreateCandidateMultipartPayload = {
+        body: {
+          ...makeValidPayload().body,
+          educations: [
+            { institution: 'MIT', title: 'BSc', startDate: '2015-09-01' },
+          ],
+          workExperiences: [
+            { company: 'Acme', position: 'Intern', startDate: '2018-01-01' },
+            {
+              company: 'Beta',
+              position: 'Lead',
+              startDate: '2019-06-01',
+              endDate: '2021-01-01',
+              description: 'Shipped features',
+            },
+          ],
+        },
+      };
+
+      await service.createCandidate(payload);
+
+      const savedArg = mockRepository.save.mock.calls[0][0];
+      expect(savedArg.educations[0].endDate).toBeUndefined();
+      expect(savedArg.workExperiences[0].endDate).toBeUndefined();
+      expect(savedArg.workExperiences[1].endDate).toEqual(new Date('2021-01-01'));
+      expect(savedArg.workExperiences[1].description).toBe('Shipped features');
     });
 
     it('returns phone and address when provided in the payload', async () => {
@@ -106,7 +159,7 @@ describe('CandidateService.createCandidate', () => {
         'jane.doe@example.com',
         [new Education('MIT', 'BSc', new Date('2015-09-01'), undefined, 10)],
         [new WorkExperience('Acme', 'Engineer', new Date('2019-07-01'), undefined, undefined, 20)],
-        '+34600000001',
+        '612345678',
         '123 Main St',
         undefined,
         44,
@@ -116,7 +169,7 @@ describe('CandidateService.createCandidate', () => {
       const payload: CreateCandidateMultipartPayload = {
         body: {
           ...makeValidPayload().body,
-          phone: '+34600000001',
+          phone: '612345678',
           address: '123 Main St',
           workExperiences: [
             { company: 'Acme', position: 'Engineer', startDate: '2019-07-01' },
@@ -128,7 +181,7 @@ describe('CandidateService.createCandidate', () => {
       const result = await service.createCandidate(payload);
 
       // Assert
-      expect(result.phone).toBe('+34600000001');
+      expect(result.phone).toBe('612345678');
       expect(result.address).toBe('123 Main St');
     });
   });
@@ -277,6 +330,98 @@ describe('CandidateService.createCandidate', () => {
       await expect(service.createCandidate(makeValidPayload())).rejects.toThrow(
         'DB connection failed',
       );
+    });
+  });
+
+  describe('resume magic-byte validation', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = join(tmpdir(), `candidate-svc-${Date.now()}-${Math.random()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+    });
+
+    it('throws ValidationError when the resume file cannot be read from disk', async () => {
+      if (process.platform === 'win32') {
+        return;
+      }
+      const fakePath = join(tmpDir, 'blocked.pdf');
+      fs.writeFileSync(
+        fakePath,
+        Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]),
+      );
+      fs.chmodSync(fakePath, 0o000);
+      mockRepository.save.mockResolvedValue(makeSavedCandidate());
+
+      try {
+        await expect(
+          service.createCandidate({
+            ...makeValidPayload(),
+            resumeFile: { path: fakePath, mimeType: 'application/pdf' },
+          }),
+        ).rejects.toThrow(ValidationError);
+      } finally {
+        fs.chmodSync(fakePath, 0o600);
+      }
+    });
+
+    it('throws ValidationError when file content does not match declared PDF type', async () => {
+      const fakePath = join(tmpDir, 'spoof.pdf');
+      fs.writeFileSync(fakePath, Buffer.from([0x4d, 0x5a, 0x90, 0x00]));
+      mockRepository.save.mockResolvedValue(makeSavedCandidate());
+
+      await expect(
+        service.createCandidate({
+          ...makeValidPayload(),
+          resumeFile: { path: fakePath, mimeType: 'application/pdf' },
+        }),
+      ).rejects.toThrow(ValidationError);
+
+      expect(fs.existsSync(fakePath)).toBe(false);
+    });
+
+    it('renames an accepted PDF to a UUID-based filename before persisting', async () => {
+      const fakePath = join(tmpDir, 'resume-upload.pdf');
+      fs.writeFileSync(
+        fakePath,
+        Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]),
+      );
+      mockRepository.save.mockImplementation(async (c: Candidate) => {
+        return new Candidate(
+          c.firstName,
+          c.lastName,
+          c.email,
+          c.educations,
+          c.workExperiences,
+          c.phone,
+          c.address,
+          c.resumeFile,
+          77,
+        );
+      });
+
+      const result = await service.createCandidate({
+        ...makeValidPayload(),
+        resumeFile: { path: fakePath, mimeType: 'application/pdf' },
+      });
+
+      expect(result.id).toBe(77);
+      const savedArg = mockRepository.save.mock.calls[0][0];
+      expect(savedArg.resumeFile?.path).toMatch(
+        /^.*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$/i,
+      );
+      expect(fs.existsSync(fakePath)).toBe(false);
+      expect(
+        savedArg.resumeFile?.path && fs.existsSync(savedArg.resumeFile.path),
+      ).toBe(true);
     });
   });
 });

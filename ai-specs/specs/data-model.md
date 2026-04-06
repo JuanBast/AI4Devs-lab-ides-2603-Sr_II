@@ -2,6 +2,17 @@
 
 This document describes the data model for the LTI (Learning Tracking Initiative) application, including entity descriptions, field definitions, relationships, and an entity-relationship diagram.
 
+## HTTP API contract (backend standards)
+
+JSON responses follow the envelope in `ai-specs/specs/backend-standards.mdc` (Request/Response Patterns and Error Response Format):
+
+- **Success:** `{ "success": true, "data": <payload>, "message"?: string }`
+- **Error:** `{ "success": false, "error": { "message": string, "code": string, "details"?: string[] } }`
+
+The OpenAPI document `ai-specs/specs/api-spec.yml` models these envelopes for each operation. **List** endpoints use **data minimization** (e.g. candidate lists expose only id, firstName, lastName, email inside the nested `data` payload). **Detail** responses nest the richer entity shape under `data`.
+
+Common **error `code`** values include: `VALIDATION_ERROR`, `DUPLICATE_EMAIL`, `NOT_FOUND`, `RATE_LIMIT_EXCEEDED`, `CORS_FORBIDDEN`, `INTERNAL_ERROR`.
+
 ## Model Descriptions
 
 ### 1. Candidate
@@ -16,10 +27,10 @@ Represents a job candidate who can apply for positions within the system.
 - `address`: Candidate's address (optional, max 100 characters)
 
 **Validation Rules:**
-- First name and last name are required, 2-100 characters, letters only
-- Email is required, must be unique, and follow valid email format
+- First name and last name are required, 2-100 characters after HTML is stripped; allowed characters are Unicode letters, spaces, hyphens, and apostrophes (no digits or arbitrary punctuation in names)
+- Email is required, must be unique, normalized to lowercase for storage, and follow valid email format
 - Phone is optional but must follow Spanish format (6|7|9)XXXXXXXX if provided
-- Address is optional but cannot exceed 100 characters
+- Address is optional; HTML is stripped and the sanitized value cannot exceed 100 characters
 - Maximum of 3 education records per candidate
 
 **Relationships:**
@@ -74,17 +85,21 @@ Represents work history and professional experience for candidates.
 ### 4. Resume
 Represents uploaded resume files associated with candidates.
 
-**Fields:**
+**Persistence (database) fields:**
 - `id`: Unique identifier for the resume record (Primary Key)
-- `filePath`: File system path to the uploaded resume (max 500 characters)
-- `fileType`: MIME type or file extension of the resume (max 50 characters)
+- `filePath`: File system path to the stored file (max 500 characters). **Internal only** — this value is never returned in HTTP JSON responses.
+- `fileType`: MIME type of the resume (max 50 characters)
 - `uploadDate`: Date and time when the resume was uploaded
 - `candidateId`: Foreign key referencing the Candidate
 
+**API exposure:**
+- Clients receive an **opaque** resume identifier (`id`), `fileType`, `uploadDate`, and `candidateId` when resumes are included in a response shape.
+- **`filePath` must not appear** in any public API payload (security / privacy; see `backend-standards.mdc` and `api-spec.yml` `Resume` schema).
+
 **Validation Rules:**
-- File path is required and cannot exceed 500 characters
-- File type is required and cannot exceed 50 characters
-- Upload date is automatically set when file is uploaded
+- Storage path is assigned by the server (e.g. UUID-based filename under a configured upload directory, not user-controlled paths)
+- File type is required and must match **magic-byte** sniffing (PDF or DOCX); declared MIME must match content
+- Upload date is set when the file is accepted
 - Supported file types: PDF and DOCX (max 10MB)
 
 **Relationships:**
@@ -228,6 +243,8 @@ Represents individual interview sessions conducted as part of an application.
 
 ## Entity Relationship Diagram
 
+The diagram reflects **physical persistence** (including `Resume.filePath`). HTTP clients never see `filePath` in JSON; see the Resume section above.
+
 ```mermaid
 erDiagram
     Candidate {
@@ -369,4 +386,5 @@ erDiagram
 - Foreign key relationships maintain referential integrity
 - Optional fields allow for flexible data entry while maintaining required core information
 - The interview system supports multi-step hiring processes with different types of interviews
-- Email fields have unique constraints to prevent duplicate accounts 
+- Email fields have unique constraints to prevent duplicate accounts
+- **API vs database:** response bodies use the `success` / `data` / `error` envelope; sensitive or internal columns (e.g. resume `filePath`) remain persistence-only and are excluded from documented API schemas 
