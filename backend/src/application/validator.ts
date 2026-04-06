@@ -33,6 +33,22 @@ export class ValidationError extends Error {
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Spanish mobile/landline: starts with 6, 7, or 9; exactly 9 digits
+const SPANISH_PHONE_REGEX = /^[679]\d{8}$/;
+
+/** Letters (any Unicode script), spaces, apostrophes, hyphens — after HTML strip. */
+const PERSON_NAME_REGEX = /^[\p{L}\s'-]+$/u;
+
+/** Strip HTML tags from a string to prevent stored XSS. */
+export function sanitizeString(input: string): string {
+  return input.replace(/<[^>]*>/g, '').trim();
+}
+
+/** Normalize email to lowercase for consistent storage and lookup. */
+export function normalizeEmail(email: string): string {
+  return email.toLowerCase().trim();
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -125,44 +141,68 @@ export function validateCreateCandidateInput(data: unknown): CreateCandidateDto 
 
   const input = data as Record<string, unknown>;
 
-  // firstName
+  // firstName — strip HTML, enforce 2-100 chars
   if (!isNonEmptyString(input.firstName)) {
     errors.push('firstName: required');
-  } else if ((input.firstName as string).length > 100) {
-    errors.push('firstName: must be at most 100 characters');
-  }
-
-  // lastName
-  if (!isNonEmptyString(input.lastName)) {
-    errors.push('lastName: required');
-  } else if ((input.lastName as string).length > 100) {
-    errors.push('lastName: must be at most 100 characters');
-  }
-
-  // email
-  if (!isNonEmptyString(input.email)) {
-    errors.push('email: required');
-  } else if ((input.email as string).length > 255) {
-    errors.push('email: must be at most 255 characters');
-  } else if (!EMAIL_REGEX.test(input.email as string)) {
-    errors.push('email: must be a valid email address');
-  }
-
-  // phone (optional)
-  if (input.phone !== undefined && input.phone !== null && input.phone !== '') {
-    if (typeof input.phone !== 'string') {
-      errors.push('phone: must be a string');
-    } else if (input.phone.length > 15) {
-      errors.push('phone: must be at most 15 characters');
+  } else {
+    const sanitized = sanitizeString(input.firstName as string);
+    if (sanitized.length < 2) {
+      errors.push('firstName: must be at least 2 characters');
+    } else if (sanitized.length > 100) {
+      errors.push('firstName: must be at most 100 characters');
+    } else if (!PERSON_NAME_REGEX.test(sanitized)) {
+      errors.push(
+        'firstName: must contain only letters, spaces, hyphens, and apostrophes',
+      );
     }
   }
 
-  // address (optional)
+  // lastName — strip HTML, enforce 2-100 chars
+  if (!isNonEmptyString(input.lastName)) {
+    errors.push('lastName: required');
+  } else {
+    const sanitized = sanitizeString(input.lastName as string);
+    if (sanitized.length < 2) {
+      errors.push('lastName: must be at least 2 characters');
+    } else if (sanitized.length > 100) {
+      errors.push('lastName: must be at most 100 characters');
+    } else if (!PERSON_NAME_REGEX.test(sanitized)) {
+      errors.push(
+        'lastName: must contain only letters, spaces, hyphens, and apostrophes',
+      );
+    }
+  }
+
+  // email — normalize to lowercase
+  if (!isNonEmptyString(input.email)) {
+    errors.push('email: required');
+  } else {
+    const normalizedEmail = normalizeEmail(input.email as string);
+    if (normalizedEmail.length > 255) {
+      errors.push('email: must be at most 255 characters');
+    } else if (!EMAIL_REGEX.test(normalizedEmail)) {
+      errors.push('email: must be a valid email address');
+    }
+  }
+
+  // phone (optional) — Spanish phone pattern if provided
+  if (input.phone !== undefined && input.phone !== null && input.phone !== '') {
+    if (typeof input.phone !== 'string') {
+      errors.push('phone: must be a string');
+    } else if (!SPANISH_PHONE_REGEX.test(input.phone.trim())) {
+      errors.push('phone: must be a valid Spanish phone number (9 digits starting with 6, 7, or 9)');
+    }
+  }
+
+  // address (optional) — strip HTML
   if (input.address !== undefined && input.address !== null && input.address !== '') {
     if (typeof input.address !== 'string') {
       errors.push('address: must be a string');
-    } else if (input.address.length > 100) {
-      errors.push('address: must be at most 100 characters');
+    } else {
+      const sanitizedAddr = sanitizeString(input.address);
+      if (sanitizedAddr.length > 100) {
+        errors.push('address: must be at most 100 characters');
+      }
     }
   }
 
@@ -192,9 +232,9 @@ export function validateCreateCandidateInput(data: unknown): CreateCandidateDto 
   }
 
   const dto: CreateCandidateDto = {
-    firstName: (input.firstName as string).trim(),
-    lastName: (input.lastName as string).trim(),
-    email: (input.email as string).trim(),
+    firstName: sanitizeString(input.firstName as string),
+    lastName: sanitizeString(input.lastName as string),
+    email: normalizeEmail(input.email as string),
     educations: (input.educations as EducationDto[]),
     workExperiences: Array.isArray(input.workExperiences)
       ? (input.workExperiences as WorkExperienceDto[])
@@ -206,7 +246,7 @@ export function validateCreateCandidateInput(data: unknown): CreateCandidateDto 
   }
 
   if (input.address && typeof input.address === 'string' && input.address.trim().length > 0) {
-    dto.address = input.address.trim();
+    dto.address = sanitizeString(input.address);
   }
 
   return dto;

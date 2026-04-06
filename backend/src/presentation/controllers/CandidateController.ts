@@ -2,6 +2,12 @@ import { Request, Response, NextFunction } from 'express';
 import { CandidateService } from '../../application/services/CandidateService';
 import { ValidationError } from '../../application/validator';
 import { DuplicateEmailError } from '../../infrastructure/repositories/PrismaCandidateRepository';
+import {
+  duplicateEmailBody,
+  jsonParseErrorBody,
+  successData,
+  validationErrorBody,
+} from '../httpResponses';
 
 export class CandidateController {
   constructor(private readonly candidateService: CandidateService) {}
@@ -15,10 +21,7 @@ export class CandidateController {
         try {
           educations = JSON.parse(educations);
         } catch {
-          res.status(400).json({
-            error: 'Validation failed',
-            details: ['educations: must be a valid JSON array'],
-          });
+          res.status(400).json(jsonParseErrorBody('educations'));
           return;
         }
       }
@@ -27,10 +30,7 @@ export class CandidateController {
         try {
           workExperiences = JSON.parse(workExperiences);
         } catch {
-          res.status(400).json({
-            error: 'Validation failed',
-            details: ['workExperiences: must be a valid JSON array'],
-          });
+          res.status(400).json(jsonParseErrorBody('workExperiences'));
           return;
         }
       }
@@ -47,15 +47,15 @@ export class CandidateController {
 
       const result = await this.candidateService.createCandidate({ body, resumeFile });
 
-      res.status(201).json({ data: result });
+      res.status(201).json(successData(result));
     } catch (error: unknown) {
       if (error instanceof ValidationError) {
-        res.status(400).json({ error: error.message, details: error.details });
+        res.status(400).json(validationErrorBody(error.details));
         return;
       }
 
       if (error instanceof DuplicateEmailError) {
-        res.status(409).json({ error: 'Email already registered' });
+        res.status(409).json(duplicateEmailBody());
         return;
       }
 
