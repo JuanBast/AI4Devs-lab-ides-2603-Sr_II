@@ -2,8 +2,8 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import App from '../App';
 
-test('renders learn react link', () => {
+test('renders the dashboard with add candidate link', () => {
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  const addCandidateButton = screen.getByTestId('add-candidate-link');
+  expect(addCandidateButton).toBeInTheDocument();
 });
